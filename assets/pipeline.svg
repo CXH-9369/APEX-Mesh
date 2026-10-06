@@ -1,0 +1,57 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 150" width="1200" height="150" role="img" aria-label="APEX-Mesh pipeline">
+  <defs>
+    <linearGradient id="node" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2b6ef2"/>
+      <stop offset="1" stop-color="#123f8c"/>
+    </linearGradient>
+    <linearGradient id="out" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#22c55e"/>
+      <stop offset="1" stop-color="#15803d"/>
+    </linearGradient>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#94a3b8"/>
+    </marker>
+  </defs>
+
+  <!-- nodes -->
+  <g font-family="Helvetica, Arial, sans-serif" text-anchor="middle">
+    <rect x="0"   y="30" width="150" height="90" rx="10" fill="url(#node)"/>
+    <rect x="175" y="30" width="150" height="90" rx="10" fill="url(#node)"/>
+    <rect x="350" y="30" width="150" height="90" rx="10" fill="url(#node)"/>
+    <rect x="525" y="30" width="150" height="90" rx="10" fill="url(#node)"/>
+    <rect x="700" y="30" width="150" height="90" rx="10" fill="url(#node)"/>
+    <rect x="875" y="30" width="150" height="90" rx="10" fill="url(#node)"/>
+    <rect x="1050" y="30" width="150" height="90" rx="10" fill="url(#out)"/>
+
+    <text x="75"   y="66" fill="#ffffff" font-size="14" font-weight="bold">Multi-view</text>
+    <text x="75"   y="86" fill="#dbeafe" font-size="12">underwater images</text>
+
+    <text x="250"  y="66" fill="#ffffff" font-size="14" font-weight="bold">Water-formation</text>
+    <text x="250"  y="86" fill="#dbeafe" font-size="12">half-Gaussian field</text>
+
+    <text x="425"  y="66" fill="#ffffff" font-size="14" font-weight="bold">Surface-aligned</text>
+    <text x="425"  y="86" fill="#dbeafe" font-size="12">flattening</text>
+
+    <text x="600"  y="66" fill="#ffffff" font-size="14" font-weight="bold">Anisotropic</text>
+    <text x="600"  y="86" fill="#dbeafe" font-size="12">implicit MLS surface</text>
+
+    <text x="775"  y="66" fill="#ffffff" font-size="14" font-weight="bold">Watertight</text>
+    <text x="775"  y="86" fill="#dbeafe" font-size="12">marching tetrahedra</text>
+
+    <text x="950"  y="66" fill="#ffffff" font-size="14" font-weight="bold">Edge-preserving</text>
+    <text x="950"  y="86" fill="#dbeafe" font-size="12">mesh refinement</text>
+
+    <text x="1125" y="66" fill="#ffffff" font-size="14" font-weight="bold">Colored</text>
+    <text x="1125" y="86" fill="#dcfce7" font-size="12">watertight mesh</text>
+  </g>
+
+  <!-- arrows -->
+  <g stroke="#94a3b8" stroke-width="2">
+    <line x1="150" y1="75" x2="168" y2="75" marker-end="url(#arrow)"/>
+    <line x1="325" y1="75" x2="343" y2="75" marker-end="url(#arrow)"/>
+    <line x1="500" y1="75" x2="518" y2="75" marker-end="url(#arrow)"/>
+    <line x1="675" y1="75" x2="693" y2="75" marker-end="url(#arrow)"/>
+    <line x1="850" y1="75" x2="868" y2="75" marker-end="url(#arrow)"/>
+    <line x1="1025" y1="75" x2="1043" y2="75" marker-end="url(#arrow)"/>
+  </g>
+</svg>

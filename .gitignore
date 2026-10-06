@@ -1,0 +1,26 @@
+# ---- large / non-code artifacts (never commit) ----
+/outputs/
+/datasets/
+/upstream/
+
+# ---- built CUDA extensions ----
+*.so
+build/
+dist/
+*.egg-info/
+
+# ---- python caches ----
+__pycache__/
+*.py[cod]
+.ipynb_checkpoints/
+
+# ---- logs / artifacts ----
+nohup.out
+*.log
+*.tar.gz
+*.npz
+
+# ---- misc ----
+.DS_Store
+.idea/
+.vscode/

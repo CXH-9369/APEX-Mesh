@@ -1,0 +1,320 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>APEX-Mesh viewer</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#111;font-family:system-ui,monospace}
+  #c{display:block}
+  #info{position:absolute;top:10px;left:10px;color:#fff;background:rgba(0,0,0,.72);
+        padding:8px 12px;border-radius:5px;font-size:14px;white-space:pre;line-height:1.5;
+        pointer-events:none;max-width:64vw}
+  #panel{position:absolute;top:10px;right:10px;color:#ddd;background:rgba(0,0,0,.72);
+        padding:8px 10px;border-radius:5px;font-size:12px}
+  #panel button{background:#333;color:#ddd;border:1px solid #555;border-radius:3px;
+        padding:4px 8px;margin:2px;cursor:pointer}
+  #panel button:hover{background:#444}
+  #drop{position:absolute;inset:0;display:none;align-items:center;justify-content:center;
+        background:rgba(0,0,0,.75);color:#fff;font-size:22px;pointer-events:none;text-align:center}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="info">starting…</div>
+<div id="panel">
+  <button id="wire">Wireframe (W)</button>
+  <button id="white">White model (B)</button>
+  <button id="flat">Flat shade (F)</button>
+  <button id="reset">Reset view (R)</button>
+  <button id="top">Top view (T)</button><br>
+  <input type="file" id="file" accept=".ply" style="margin-top:6px;max-width:170px">
+</div>
+<div id="drop">Drop a .ply here</div>
+
+<script src="./three.min.js"></script>
+<script>
+"use strict";
+var canvas = document.getElementById('c');
+var renderer = new THREE.WebGLRenderer({canvas:canvas, antialias:true});
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+var scene = new THREE.Scene();
+scene.background = new THREE.Color(0x16181d);
+
+var camera = new THREE.PerspectiveCamera(50, 1, 0.05, 2000);
+camera.position.set(20, 15, 20);
+
+// lights
+var ambient = new THREE.AmbientLight(0xffffff, 0.50);
+var sun = new THREE.DirectionalLight(0xffffff, 0.70);
+scene.add(ambient); scene.add(sun);
+var gain = 1.0;
+function setGain(g){
+  gain = Math.max(0.2, Math.min(3.0, g));
+  ambient.intensity = 0.50 * gain;
+  sun.intensity = 0.70 * gain;
+}
+
+var mesh = null, group = new THREE.Group();
+scene.add(group);
+
+function $(id){ return document.getElementById(id); }
+function info(s){ $('info').textContent = s; }
+
+// ---------------------------------------------------------------------------
+// fast binary loader — viewer.bin (APXM) is a zero-copy typed-array view, no
+// per-vertex DataView calls, so a 350 MB mesh loads in well under a second.
+// layout: magic "APXM" | nv u32 | nf u32 | pos f32[nv*3] | norm f32[nv*3]
+//         | rgb u8[nv*3] (4-padded) | faces u32[nf*3]
+// ---------------------------------------------------------------------------
+function loadBin(arrayBuffer){
+  var bytes = new Uint8Array(arrayBuffer);
+  if (bytes.length < 12) throw new Error('viewer.bin truncated');
+  if (String.fromCharCode(bytes[0],bytes[1],bytes[2],bytes[3]) !== 'APXM')
+    throw new Error('viewer.bin bad magic');
+  var dv = new DataView(arrayBuffer);
+  var nv = dv.getUint32(4, true), nf = dv.getUint32(8, true);
+  var posBase = 12;
+  var norBase = posBase + nv*12;
+  var colBase = norBase + nv*12;
+  var colBytes = nv*3;
+  var faceBase = colBase + ((colBytes + 3) & ~3);
+  var positions = new Float32Array(arrayBuffer, posBase, nv*3);
+  var normals   = new Float32Array(arrayBuffer, norBase, nv*3);
+  var colors    = new Uint8Array(arrayBuffer, colBase, colBytes);
+  var faces     = new Uint32Array(arrayBuffer, faceBase, nf*3);
+  return {positions:positions, normals:normals, colors:colors, faces:faces};
+}
+
+// ---------------------------------------------------------------------------
+// binary little-endian PLY parser (fallback for drag & drop).  Reads whatever
+// properties the header declares; normals are optional.
+// ---------------------------------------------------------------------------
+function parsePly(arrayBuffer){
+  var bytes = new Uint8Array(arrayBuffer);
+  var dv = new DataView(arrayBuffer);
+  var header = '', headerEnd = 0;
+  for (var i=0;i<bytes.length;i++){
+    header += String.fromCharCode(bytes[i]);
+    if (header.slice(-11) === 'end_header\n'){ headerEnd = i+1; break; }
+  }
+  var elements = {}, cur = null;
+  header.split('\n').forEach(function(raw){
+    var t = raw.trim().split(/\s+/);
+    if (t[0] === 'element'){ cur = {name:t[1], count:+t[2], props:[]}; elements[t[1]] = cur; }
+    else if (t[0] === 'property' && cur){
+      if (t[1] === 'list') cur.props.push({list:true, countType:t[2], type:t[3], name:t[4]});
+      else cur.props.push({list:false, type:t[1], name:t[2]});
+    }
+  });
+  var sizes = {char:1,uchar:1,short:2,ushort:2,int:4,uint:4,float:4,double:8};
+  function sz(tt){ return sizes[tt] || 4; }
+
+  var vel = elements['vertex'], fel = elements['face'];
+  var vOff = {}, vStride = 0;
+  vel.props.forEach(function(p){ vOff[p.name] = vStride; vStride += sz(p.type); });
+  var fOff = {}, fStride = 0;
+  fel.props.forEach(function(p){ fOff[p.name] = fStride;
+    fStride += sz(p.countType) + 3 * sz(p.type); });
+
+  var hasN = ('nx' in vOff) && ('ny' in vOff) && ('nz' in vOff);
+  var positions = new Float32Array(vel.count*3);
+  var colors = new Uint8Array(vel.count*3);
+  var normals = hasN ? new Float32Array(vel.count*3) : null;
+  var base = headerEnd;
+  for (var vi=0; vi<vel.count; vi++){
+    var b = base + vi*vStride;
+    positions[vi*3]   = dv.getFloat32(b + vOff.x, true);
+    positions[vi*3+1] = dv.getFloat32(b + vOff.y, true);
+    positions[vi*3+2] = dv.getFloat32(b + vOff.z, true);
+    if (hasN){
+      normals[vi*3]   = dv.getFloat32(b + vOff.nx, true);
+      normals[vi*3+1] = dv.getFloat32(b + vOff.ny, true);
+      normals[vi*3+2] = dv.getFloat32(b + vOff.nz, true);
+    }
+    if ('red' in vOff)   colors[vi*3]   = dv.getUint8(b + vOff.red);
+    if ('green' in vOff) colors[vi*3+1] = dv.getUint8(b + vOff.green);
+    if ('blue' in vOff)  colors[vi*3+2] = dv.getUint8(b + vOff.blue);
+  }
+  var fBase = base + vel.count*vStride;
+  var faces = new Uint32Array(fel.count*3);
+  for (var fi=0; fi<fel.count; fi++){
+    var fb = fBase + fi*fStride + fOff.vertex_indices;
+    for (var j=0;j<3;j++) faces[fi*3+j] = dv.getInt32(fb + 1 + j*4, true);
+  }
+  return {positions:positions, normals:normals, colors:colors, faces:faces};
+}
+
+function loadMesh(p){
+  var geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(p.positions, 3));
+  geo.setAttribute('color', new THREE.BufferAttribute(p.colors, 3, true));
+  if (p.normals) geo.setAttribute('normal', new THREE.BufferAttribute(p.normals, 3));
+  else geo.computeVertexNormals();
+  geo.setIndex(new THREE.BufferAttribute(p.faces, 1));
+  geo.computeBoundingBox();
+
+  var mat = new THREE.MeshLambertMaterial({
+    vertexColors:true, side:THREE.DoubleSide, flatShading:false
+  });
+  if (mesh) group.remove(mesh);
+  mesh = new THREE.Mesh(geo, mat);
+  group.add(mesh);
+
+  var bb = geo.boundingBox;
+  var center = bb.getCenter(new THREE.Vector3());
+  var size = bb.getSize(new THREE.Vector3());
+  var radius = size.length() * 0.6;
+  target.copy(center);
+  sph.radius = Math.max(radius * 1.6, 0.5);
+  sph.theta = 0.7; sph.phi = 1.15;
+  updateCamera();
+
+  info('verts ' + (p.positions.length/3) + '  faces ' + (p.faces.length/3) +
+       '\ndrag = rotate   right-drag / shift-drag = pan   wheel = zoom\n' +
+       'W = wireframe   B = white/colour   F = flat/smooth   T = top-down   R = reset\n' +
+       '- / + = brightness');
+}
+
+function readFile(file){
+  var r = new FileReader();
+  r.onload = function(){ loadMesh(parsePly(r.result)); };
+  r.readAsArrayBuffer(file);
+}
+
+// ---------------------------------------------------------------------------
+// orbit controls
+// ---------------------------------------------------------------------------
+var target = new THREE.Vector3();
+var sph = {radius: 25, theta: 0.7, phi: 1.15};
+var dragging = false, mode = 0, lastX = 0, lastY = 0;
+
+function updateCamera(){
+  camera.position.set(
+    target.x + sph.radius * Math.sin(sph.phi) * Math.sin(sph.theta),
+    target.y + sph.radius * Math.cos(sph.phi),
+    target.z + sph.radius * Math.sin(sph.phi) * Math.cos(sph.theta));
+  camera.lookAt(target);
+}
+
+canvas.addEventListener('mousedown', function(e){
+  dragging = true;
+  mode = (e.button === 2 || e.shiftKey) ? 1 : 0;
+  lastX = e.clientX; lastY = e.clientY;
+});
+window.addEventListener('mousemove', function(e){
+  if (!dragging) return;
+  var dx = e.clientX - lastX, dy = e.clientY - lastY;
+  lastX = e.clientX; lastY = e.clientY;
+  if (mode === 0){
+    sph.theta -= dx * 0.005;
+    sph.phi   -= dy * 0.005;
+    sph.phi = Math.max(0.05, Math.min(Math.PI - 0.05, sph.phi));
+  } else {
+    var scale = sph.radius * 2 * Math.tan(camera.fov*Math.PI/360) / canvas.clientHeight;
+    var right = new THREE.Vector3().setFromMatrixColumn(camera.matrix, 0);
+    var up = new THREE.Vector3().setFromMatrixColumn(camera.matrix, 1);
+    target.addScaledVector(right, -dx*scale).addScaledVector(up, dy*scale);
+  }
+  updateCamera();
+});
+window.addEventListener('mouseup', function(){ dragging = false; });
+canvas.addEventListener('wheel', function(e){
+  e.preventDefault();
+  sph.radius *= (1 + e.deltaY * 0.0012);
+  sph.radius = Math.max(0.3, Math.min(500, sph.radius));
+  updateCamera();
+}, {passive:false});
+canvas.addEventListener('contextmenu', function(e){ e.preventDefault(); });
+
+// buttons / keys
+$('wire').onclick = function(){
+  if (mesh){ mesh.material.wireframe = !mesh.material.wireframe; }
+};
+$('white').onclick = function(){
+  if (!mesh) return;
+  mesh.material.vertexColors = !mesh.material.vertexColors;
+  mesh.material.color.set(mesh.material.vertexColors ? 0xffffff : 0xe6e6e6);
+  mesh.material.needsUpdate = true;
+};
+$('flat').onclick = function(){
+  if (mesh){ mesh.material.flatShading = !mesh.material.flatShading;
+             mesh.material.needsUpdate = true; }
+};
+$('reset').onclick = function(){
+  if (!mesh) return;
+  var bb = mesh.geometry.boundingBox;
+  var c = bb.getCenter(new THREE.Vector3());
+  var s = bb.getSize(new THREE.Vector3());
+  target.copy(c); sph.radius = s.length()*0.6*1.6; sph.theta=0.7; sph.phi=1.15;
+  updateCamera();
+};
+$('top').onclick = function(){
+  sph.phi = 0.03;             // near-straight-down view (top-down)
+  updateCamera();
+};
+$('file').addEventListener('change', function(e){
+  if (e.target.files[0]) readFile(e.target.files[0]);
+});
+window.addEventListener('keydown', function(e){
+  if (e.key === 'w' || e.key === 'W') $('wire').click();
+  if (e.key === 'b' || e.key === 'B') $('white').click();
+  if (e.key === 'f' || e.key === 'F') $('flat').click();
+  if (e.key === 'r' || e.key === 'R') $('reset').click();
+  if (e.key === 't' || e.key === 'T') $('top').click();
+  if (e.key === '-' || e.key === '_') setGain(gain - 0.15);
+  if (e.key === '+' || e.key === '=') setGain(gain + 0.15);
+});
+
+// drag & drop
+var drop = $('drop');
+window.addEventListener('dragover', function(e){ e.preventDefault(); drop.style.display='flex'; });
+window.addEventListener('dragleave', function(){ drop.style.display='none'; });
+window.addEventListener('drop', function(e){
+  e.preventDefault(); drop.style.display='none';
+  if (e.dataTransfer.files[0]) readFile(e.dataTransfer.files[0]);
+});
+
+// ---------------------------------------------------------------------------
+// resize + render loop
+// ---------------------------------------------------------------------------
+function resize(){
+  var w = window.innerWidth, h = window.innerHeight;
+  renderer.setSize(w, h, false);
+  camera.aspect = w/h; camera.updateProjectionMatrix();
+}
+window.addEventListener('resize', resize);
+resize();
+
+function animate(){
+  requestAnimationFrame(animate);
+  sun.position.copy(camera.position);
+  renderer.render(scene, camera);
+}
+animate();
+
+// auto-load the fast binary next to this file, falling back to the PLY.
+// (works over http.server; a file:// open will show the instructions below)
+info('loading viewer.bin (~360 MB)…');
+fetch('viewer.bin?v=' + Date.now()).then(function(r){
+  if (!r.ok) throw new Error('no viewer.bin');
+  return r.arrayBuffer();
+}).then(function(ab){
+  info('parsing viewer.bin…');
+  loadMesh(loadBin(ab));
+}).catch(function(){
+  info('loading colored_mesh.ply (large — may take a moment)…');
+  fetch('colored_mesh.ply?v=' + Date.now()).then(function(r){
+    if (!r.ok) throw new Error('no colored_mesh.ply');
+    return r.arrayBuffer();
+  }).then(function(ab){
+    // let the status paint before the synchronous PLY parse blocks the thread
+    setTimeout(function(){ loadMesh(parsePly(ab)); }, 50);
+  }).catch(function(){
+    info('Could not auto-load the mesh.\nDrop colored_mesh.ply onto the page, or run\n' +
+         '    python -m http.server\nin the mesh/ folder, then open\n' +
+         '    http://localhost:8000/viewer.html');
+  });
+});
+</script>
+</body>
+</html>
